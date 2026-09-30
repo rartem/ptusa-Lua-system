@@ -1,4 +1,4 @@
---version = 9
+--version = 10
 
 -- ----------------------------------------------------------------------------
 --Добавление функциональности технологическому объекту на основе
@@ -245,7 +245,35 @@ OBJECTS = {}
 
 --Таблица для переиспользования функций построения шагов объекта при горячей
 --перезагрузке (см. reload_tech_object).
-local ptusa_internals = {}
+local ptusa_internals = { descriptions = {}, reloading = false }
+
+local function copy_description(value, seen)
+    if type(value) ~= "table" then
+        assert(type(value) ~= "function" and type(value) ~= "userdata",
+            "Object description must contain data only")
+        return value
+    end
+    assert(getmetatable(value) == nil, "Metatables are not allowed in descriptions")
+    seen = seen or {}
+    assert(not seen[value], "Cyclic object description")
+    seen[value] = true
+    local result = {}
+    for k, v in pairs(value) do result[k] = copy_description(v, seen) end
+    seen[value] = nil
+    return result
+end
+
+local function resolve_object_device(name)
+    local device = _G["__"..name]
+    if not device then
+        if ptusa_internals.reloading then
+            error("Unknown device: "..tostring(name))
+        end
+        print("Error: unknown device '"..name.."'.")
+        device = DEVICE(-1)
+    end
+    return device
+end
 
 init_tech_objects = function()
 
@@ -255,11 +283,7 @@ init_tech_objects = function()
         sub_group_idx = sub_group_idx or 0
         if devices ~= nil then
             for _, value in pairs( devices ) do
-                assert( loadstring( "dev = __"..value ) )( )
-                if dev == nil then
-                    print( "Error: unknown device '"..value.."' (__"..value..")." )
-                    dev = DEVICE( -1 )
-                end
+                local dev = resolve_object_device(value)
 
                 mode[ state ][ step_n ][ action ]:add_dev( dev, group_idx, sub_group_idx )
             end
@@ -298,11 +322,7 @@ init_tech_objects = function()
             local group = 0
             for _, value in pairs( devices ) do
                 for _, value in pairs( value ) do
-                    assert( loadstring( "dev = __"..value ) )( )
-                    if dev == nil then
-                        print( "Error: unknown device '"..value.."' (__"..value..")." )
-                        dev = DEVICE( -1 )
-                    end
+                    local dev = resolve_object_device(value)
 
                     mode[ state ][ step_n ][ action ]:add_dev( dev, group, t )
                 end
@@ -341,6 +361,9 @@ init_tech_objects = function()
                                 --Добавляем индекс параметра производительности.
                                 step_w:set_param_idx( group_idx - 1, param_n )
                             else
+                                if ptusa_internals.reloading then
+                                    error("Unknown pump frequency device/parameter: "..element)
+                                end
                                 print( "Error: unknown device '"..element..
                                     "' (__"..element..")." )
                             end
@@ -364,12 +387,7 @@ init_tech_objects = function()
                 if sub_group_idx then
                     for _, value in pairs( element ) do --Устройства.
 
-                        local dev = _G[ "__"..value ]
-                        if dev == nil then
-                            print( "Error: unknown device '"..value..
-                                "' (__"..value..")." )
-                            dev = DEVICE( -1 )
-                        end
+                        local dev = resolve_object_device(value)
 
                         step_w:add_dev( dev, group_idx - 1, sub_group_idx )
                     end
@@ -438,12 +456,7 @@ init_tech_objects = function()
             local group = 0
             for _, value in pairs( value.AI_AO ) do
                 for _, value in pairs( value ) do
-                    assert( loadstring( "dev = __"..value ) )( )
-                    if dev == nil then
-                        print( "Error: unknown device '"..value..
-                            "' (__"..value..")." )
-                        dev = DEVICE( -1 )
-                    end
+                    local dev = resolve_object_device(value)
                     mode[ state_n ][ step_n ][ step.A_AI_AO ]:add_dev(
                         dev, 0, group )
                 end
@@ -464,7 +477,7 @@ init_tech_objects = function()
         elseif value.wash_data ~= nil then
             --Устаревшее описание.
             local step_w = mode[ state_n ][ step_n ][ step.A_WASH ]
-            proc_devices_action( value.wash_data, 1, step_w )
+            proc_devices_action( value.wash_data, 1, step_w, object )
         end
 
         if value.delay_opened_devices then
@@ -505,7 +518,10 @@ init_tech_objects = function()
     SYSTEM = G_PAC_INFO() --Информаци о PAC, которую добавляем в Lua.
     __SYSTEM = SYSTEM     --Информаци о PAC, которую добавляем в Lua.
 
+    ptusa_internals.descriptions = {}
     for _, obj_info in ipairs( init_tech_objects_modes() ) do
+        ptusa_internals.descriptions[#ptusa_internals.descriptions + 1] =
+            copy_description(obj_info)
 
         local modes_count = 0
         if ( obj_info.modes ~= nil ) then
@@ -641,34 +657,6 @@ init_tech_objects = function()
 end
 
 -- ----------------------------------------------------------------------------
---Подсчёт количества операций и параметров объекта по его описанию.
-local get_object_par_counts = function( obj_info )
-    local modes_count = 0
-    if obj_info.modes ~= nil then
-        modes_count = #obj_info.modes
-    end
-
-    local par_float_count = 1
-    if type( obj_info.par_float ) == "table" then
-        par_float_count = #obj_info.par_float
-    end
-    local rt_par_float_count = 1
-    if type( obj_info.rt_par_float ) == "table" then
-        rt_par_float_count = #obj_info.rt_par_float
-    end
-    local par_uint_count = 1
-    if type( obj_info.par_uint ) == "table" then
-        par_uint_count = #obj_info.par_uint
-    end
-    local rt_par_uint_count = 1
-    if type( obj_info.rt_par_uint ) == "table" then
-        rt_par_uint_count = #obj_info.rt_par_uint
-    end
-
-    return modes_count, obj_info.timers or 1, par_float_count,
-        rt_par_float_count, par_uint_count, rt_par_uint_count
-end
--- ----------------------------------------------------------------------------
 --Построение операций (режимов и шагов) на системном объекте по описанию.
 --Используется как при холодном старте, так и при горячей перезагрузке.
 local build_object_modes = function( obj_info, object )
@@ -722,273 +710,200 @@ local build_object_modes = function( obj_info, object )
 end
 -- ----------------------------------------------------------------------------
 -- ----------------------------------------------------------------------------
---Проверка совместимости нового описания объекта с уже работающим объектом.
---Возвращает nil, если перезагрузка безопасна, или текст причины отказа.
---Горячей перезагрузкой нельзя менять то, что привязано в prg.lua и
---dairy-sys (базовый модуль, номера операций) и чего нет в main.io.lua.
-local check_reload_allowed = function( obj_info, serial_number )
-
-    --Эталон - описание, по которому объект создан при холодном старте.
-    local base_info = init_tech_objects_modes()[ serial_number ]
-    if not base_info then
-        return "в текущем описании проекта нет объекта ["..
-            tostring( serial_number ).."]."
+-- Only the operation bodies may change. Object identity, parameter layout,
+-- operation order, and all metadata used by project modules remain unchanged.
+local function equal_description(a, b)
+    if type(a) ~= type(b) then return false end
+    if type(a) ~= "table" then return a == b end
+    for k, v in pairs(a) do
+        if not equal_description(v, b[k]) then return false end
     end
-
-    --Тип технологического объекта менять нельзя (привязан базовый модуль).
-    if obj_info.tech_type and base_info.tech_type and
-        obj_info.tech_type ~= base_info.tech_type then
-
-        return "изменён tech_type объекта ("..tostring( base_info.tech_type )..
-            " -> "..tostring( obj_info.tech_type ).."). Требуется холодный "..
-            "старт."
-    end
-
-    --Базовый технологический объект менять нельзя.
-    if obj_info.base_tech_object and base_info.base_tech_object and
-        obj_info.base_tech_object ~= base_info.base_tech_object then
-
-        return "изменён базовый объект ('"..base_info.base_tech_object..
-            "' -> '"..obj_info.base_tech_object.."'). Требуется холодный "..
-            "старт."
-    end
-
-    --Количество операций менять нельзя: номера операций, на которые
-    --опираются prg.lua и базовые модули, сдвинутся.
-    local base_modes = base_info.modes or {}
-    local new_modes = obj_info.modes or {}
-    if #new_modes ~= #base_modes then
-        return "изменено количество операций ("..#base_modes.." -> "..
-            #new_modes.."). Добавление/удаление операций требует холодного "..
-            "старта."
-    end
-
-    return nil
+    for k in pairs(b) do if a[k] == nil then return false end end
+    return true
 end
--- ----------------------------------------------------------------------------
---Сбор имён устройств из шага или состояния описания объекта.
-local collect_step_devices = function( step_info, names )
 
-    --Поля шага/состояния, в которых могут быть устройства.
-    local device_fields =
-        {
-        "checked_devices",
-        "opened_devices",
-        "opened_reverse_devices",
-        "closed_devices",
-        "required_FB",
-        "opened_upper_seat_v",
-        "opened_lower_seat_v",
-        "delay_opened_devices",
-        "delay_closed_devices",
-        "DI_DO",
-        "inverted_DI_DO",
-        "enable_step_by_signal",
-        "AI_AO",
-        "devices_data",
-        "jump_if",
-        }
+local function unchanged_except(a, b, ignored, label)
+    for k, v in pairs(a) do
+        if not ignored[k] then
+            assert(equal_description(v, b[k]), "Changed "..label.."."..tostring(k)..
+                "; cold restart required")
+        end
+    end
+    for k in pairs(b) do
+        if not ignored[k] then
+            assert(a[k] ~= nil, "Removed "..label.."."..tostring(k)..
+                "; cold restart required")
+        end
+    end
+end
 
-    --Рекурсивная функция объявлена отдельно (local x = function..end не
-    --видит саму себя внутри выражения в Lua 5.1).
-    local collect
-    collect = function( value )
-        if type( value ) == "table" then
-            for key, item in pairs( value ) do
-                --pump_freq может быть номером/именем параметра, а не
-                --устройством; по нему проверку существования не выполняем.
-                if key ~= "pump_freq" then
-                    if type( item ) == "table" then
-                        collect( item )
-                    elseif type( item ) == "string" then
-                        names[ item ] = true
-                    end
+local function integer(value, low, high, label)
+    assert(type(value) == "number" and value == math.floor(value) and
+        value >= low and value <= high, "Invalid "..label)
+end
+
+local function array_size(value, label)
+    assert(type(value) == "table", label.." must be an array")
+    local size = #value
+    for k in pairs(value) do integer(k, 1, size, label.." index") end
+    for i = 1, size do assert(value[i] ~= nil, "Sparse "..label) end
+    return size
+end
+
+local valid_states = { [0]=true, [1]=true, [2]=true, [3]=true,
+    [10]=true, [11]=true, [12]=true, [13]=true, [14]=true }
+local step_fields = {
+    name=true, time_param_n=true, step_max_duration_par_n=true,
+    next_step_n=true, attached_object=true, steps=true,
+    checked_devices=true, opened_devices=true, opened_reverse_devices=true,
+    closed_devices=true, opened_upper_seat_v=true, opened_lower_seat_v=true,
+    required_FB=true, jump_if=true, DI_DO=true, inverted_DI_DO=true,
+    enable_step_by_signal=true, AI_AO=true, devices_data=true, wash_data=true,
+    delay_opened_devices=true, delay_closed_devices=true,
+}
+
+local function validate_body(body, steps_count, params_count, is_step)
+    assert(type(body) == "table", "Step/state must be a table")
+    for key in pairs(body) do
+        assert(step_fields[key] and (not is_step or key ~= "steps"),
+            "Unsupported step/state field: "..tostring(key))
+    end
+    if is_step then assert(type(body.name) == "string", "Step name is required") end
+    for _, key in ipairs({"time_param_n", "step_max_duration_par_n"}) do
+        if body[key] ~= nil then integer(body[key], -1, params_count, key) end
+    end
+    if body.next_step_n ~= nil then
+        integer(body.next_step_n, -1, steps_count, "next_step_n")
+    end
+    if body.attached_object ~= nil then
+        integer(body.attached_object, 1, #object_manager.objects, "attached_object")
+    end
+    local function validate_action(group, jumping)
+        assert(type(group) == "table", "Action group must be a table")
+        local fields = jumping and {on_devices=true, off_devices=true,
+            next_step_n=true, next_state_n=true} or
+            {DI=true, DO=true, devices=true, rev_devices=true, pump_freq=true}
+        for key, value in pairs(group) do
+            assert(fields[key], "Unsupported action field: "..tostring(key))
+            if key == "pump_freq" then
+                if type(value) == "number" then
+                    integer(value, 1, params_count, "pump_freq")
+                else
+                    assert(type(value) == "string", "Invalid pump_freq")
+                end
+            elseif key ~= "next_step_n" and key ~= "next_state_n" then
+                array_size(value, key)
+                for _, name in ipairs(value) do
+                    assert(type(name) == "string", "Invalid device name")
                 end
             end
         end
     end
-
-    for _, field in ipairs( device_fields ) do
-        local value = step_info[ field ]
-        if value ~= nil then
-            collect( value )
+    if body.devices_data then
+        array_size(body.devices_data, "devices_data")
+        for _, group in ipairs(body.devices_data) do validate_action(group, false) end
+    end
+    if body.wash_data then validate_action(body.wash_data, false) end
+    assert(not (body.devices_data and body.wash_data),
+        "Use either devices_data or wash_data")
+    for _, field in ipairs({"delay_opened_devices", "delay_closed_devices"}) do
+        for _, group in pairs(body[field] or {}) do
+            assert(type(group) == "table", "Invalid "..field)
+            if group[2] ~= nil then integer(group[2], 1, params_count, field) end
         end
     end
+    array_size(body.jump_if or {}, "jump_if")
+    for _, group in ipairs(body.jump_if or {}) do
+        validate_action(group, true)
+        if group.next_state_n ~= nil then
+            assert(valid_states[group.next_state_n], "Invalid next_state_n")
+        end
+        -- A jump to another state is checked against that state's steps below.
+    end
 end
--- ----------------------------------------------------------------------------
---Сбор всех имён устройств из описания объекта (все состояния и шаги).
-local collect_obj_devices = function( obj_info, names )
 
-    local modes = obj_info.modes or {}
-    for _, oper_info in pairs( modes ) do
-        local states = oper_info.states or {}
-        for _, state_info in pairs( states ) do
-            collect_step_devices( state_info, names )
-            local steps = state_info.steps or {}
-            for _, step_info in ipairs( steps ) do
-                collect_step_devices( step_info, names )
+local function validate_reload(info, base)
+    unchanged_except(info, base, {modes=true, cooper_param_number=true}, "object")
+    local modes = info.modes or {}
+    assert(array_size(modes, "modes") == #(base.modes or {}),
+        "Changed operation count; cold restart required")
+    local params_count = type(base.par_float) == "table" and #base.par_float or 1
+    if info.cooper_param_number ~= nil then
+        integer(info.cooper_param_number, 1, params_count, "cooper_param_number")
+    end
+    for i, mode in ipairs(modes) do
+        unchanged_except(mode, base.modes[i], {states=true}, "operation "..i)
+        for state_n, state in pairs(mode.states or {}) do
+            assert(valid_states[state_n], "Invalid operation state")
+            local count = array_size(state.steps or {}, "steps")
+            validate_body(state, count, params_count, false)
+            for _, item in ipairs(state.steps or {}) do
+                validate_body(item, count, params_count, true)
             end
-        end
-    end
-end
--- ----------------------------------------------------------------------------
---Проверка, что в новом описании нет НОВЫХ неизвестных устройств (которых не
---было ни в эталоне, ни в main.io.lua/_G). Устройства, которые уже были в
---эталоне при холодном старте, пропускаются: они обрабатывались и раньше
---(в т.ч. отключённые физически, становящиеся DEVICE(-1)).
---Возвращает nil, если новых неизвестных устройств нет, или имя устройства.
-local check_devices_exist = function( obj_info, base_info )
-
-    local base_names = {}
-    if base_info then
-        collect_obj_devices( base_info, base_names )
-    end
-
-    local new_names = {}
-    collect_obj_devices( obj_info, new_names )
-
-    for name in pairs( new_names ) do
-        --Устройство уже было в эталоне (обработано при холодном старте).
-        if not base_names[ name ] then
-            if _G[ "__"..name ] == nil then
-                return name
+            local function validate_jumps(body)
+                for _, group in pairs(body.jump_if or {}) do
+                    if group.next_step_n ~= nil then
+                        local target = (mode.states or {})[group.next_state_n or state_n]
+                        integer(group.next_step_n, -1, #(target and target.steps or {}),
+                            "jump_if.next_step_n")
+                    end
+                end
             end
+            validate_jumps(state)
+            for _, item in ipairs(state.steps or {}) do validate_jumps(item) end
         end
     end
-
-    return nil
 end
--- ----------------------------------------------------------------------------
---Горячая перезагрузка технологического объекта по его глобальному порядковому
---номеру [N] (см. tech_object_manager::reload_object). Строит новый системный
---объект по описанию init_tech_objects_modes()[ N ] и обновляет ту же обёртку.
---v1: описание берётся текущее (без смены логики); возвращает новый объект.
-reload_tech_object = function( serial_number )
 
-    local is_ok, err_or_obj = pcall( reload_tech_object_inner, serial_number )
-    if not is_ok then
-        print( "Reload object ["..serial_number.."] error - "..tostring( err_or_obj ) )
-        return 0
-    end
-
-    return err_or_obj
-end
--- ----------------------------------------------------------------------------
---Внутренняя реализация reload_tech_object (обёрнута в pcall для диагностики).
-reload_tech_object_inner = function( serial_number )
-
-    print( "Reload object ["..serial_number.."] start." )
-
-    --Описание объекта: сначала файл-модуль (горячая правка из EasyEPLANner),
-    --при его отсутствии - текущее описание проекта.
-    local obj_info
-    local module_loader = loadfile( "objects/obj_"..serial_number..".lua" )
-    if module_loader then
-        local is_ok, module_res = pcall( module_loader )
-        if is_ok and type( module_res ) == "table" then
-            obj_info = module_res
-        else
-            print( "Reload object ["..serial_number.."] - module load error, "..
-                "use current description." )
+-- Called only by C++ with a separate operation manager for the same object.
+-- Does not replace the wrapper, object, parameters, timers or live operations.
+function prepare_tech_object_reload(serial_number, replacement, path)
+    local base = assert(ptusa_internals.descriptions[serial_number],
+        "No cold-start description for object")
+    local wrapper = assert(object_manager.objects[serial_number], "Object not found")
+    local file, open_error = io.open(path, "rb")
+    assert(file, open_error)
+    local source = file:read(1024 * 1024 + 1)
+    file:close()
+    assert(source and #source <= 1024 * 1024, "Object module exceeds 1 MiB")
+    assert(source:byte(1) ~= 27, "Object module must be Lua source, not bytecode")
+    local loader, load_error = loadstring(source, "@"..path)
+    assert(loader, load_error)
+    -- Description modules cannot call controller APIs or modify live globals.
+    local function constants(source)
+        local result = {}
+        for k, v in pairs(source or {}) do
+            if type(v) == "number" or type(v) == "string" then result[k] = v end
         end
+        return result
     end
-
-    if not obj_info then
-        obj_info = init_tech_objects_modes()[ serial_number ]
-    end
-    if not obj_info then
-        print( "Reload object error - no description for object ["..
-            tostring( serial_number ).."]." )
-        return 0
-    end
-
-    --Проверка безопасности: не допускаем изменения того, что привязано в
-    --prg.lua и dairy-sys, и появление НОВЫХ неизвестных устройств.
-    local reject_reason = check_reload_allowed( obj_info, serial_number )
-    if reject_reason then
-        print( "Reload object ["..serial_number.."] rejected - "..reject_reason )
-        return 0
-    end
-
-    local base_info = init_tech_objects_modes()[ serial_number ]
-    local unknown_device = check_devices_exist( obj_info, base_info )
-    if unknown_device then
-        print( "Reload object ["..serial_number.."] rejected - unknown device '"..
-            unknown_device.."'. Новые устройства требуют холодного старта." )
-        return 0
-    end
-
-    local wrapper = object_manager.objects[ serial_number ]
-    if not wrapper or not wrapper.sys_tech_object then
-        print( "Reload object error - wrapper OBJECT"..tostring( serial_number )..
-            " not found." )
-        return 0
-    end
-
-    local old_sys = wrapper.sys_tech_object
-
-    --Внутренние номера и имя в Lua сохраняются.
-    local name = obj_info.name or "ОБЪЕКТ"
-    local number = obj_info.n or old_sys:get_number()
-    local tech_type = obj_info.tech_type or 1
-    local name_Lua = "OBJECT"..serial_number
-
-    local modes_count, timers_count, par_float_count, rt_par_float_count,
-        par_uint_count, rt_par_uint_count = get_object_par_counts( obj_info )
-
-    --Создаём новый системный объект (без регистрации в object_manager).
-    local new_sys
-    if tech_type >= 111 and tech_type <= 120 then
-        new_sys = cipline_tech_object( name, number, tech_type, name_Lua,
-            modes_count, timers_count, par_float_count, rt_par_float_count,
-            par_uint_count, rt_par_uint_count )
-    else
-        new_sys = tech_object( name, number, tech_type, name_Lua,
-            modes_count, timers_count, par_float_count, rt_par_float_count,
-            par_uint_count, rt_par_uint_count )
-    end
-
-    --Временная обёртка для построения операций (без регистрации).
-    local tmp = {}
-    tmp.sys_tech_object = new_sys
-    tmp.PAR_FLOAT = wrapper.PAR_FLOAT
-    tmp.par_float = new_sys.par_float
-    tmp.rt_par_float = new_sys.rt_par_float
-    tmp.par_uint = new_sys.par_uint
-    tmp.rt_par_uint = new_sys.rt_par_uint
-    tmp.get_modes_manager = function( self )
-        return self.sys_tech_object:get_modes_manager()
-    end
-
-    build_object_modes( obj_info, tmp )
-
-    --Перенос значений параметров со старого объекта на новый.
-    local copy_par = function( dst, src, count )
-        for i = 1, count do
-            if src[ i ] ~= nil then dst[ i ] = src[ i ] end
-        end
-    end
-    copy_par( new_sys.par_float, old_sys.par_float, par_float_count )
-    copy_par( new_sys.rt_par_float, old_sys.rt_par_float,
-        rt_par_float_count )
-    copy_par( new_sys.par_uint, old_sys.par_uint, par_uint_count )
-    copy_par( new_sys.rt_par_uint, old_sys.rt_par_uint,
-        rt_par_uint_count )
-
-    --Обновляем ту же обёртку (идентичность и ссылки сохраняются).
-    wrapper.sys_tech_object = new_sys
-    wrapper.par_float = new_sys.par_float
-    wrapper.par = new_sys.par_float
-    wrapper.rt_par_float = new_sys.rt_par_float
-    wrapper.par_uint = new_sys.par_uint
-    wrapper.rt_par_uint = new_sys.rt_par_uint
-    wrapper.timers = new_sys.timers
-
-    print( "Object ["..serial_number.."] ("..name_Lua..") rebuilt." )
-
-    return new_sys
+    setfenv(loader, {operation=constants(operation), step=constants(step),
+        valve=constants(valve)})
+    local old_hook, old_mask, old_count = debug.gethook()
+    debug.sethook(function() error("Reload instruction limit exceeded") end, "", 1000000)
+    local ok, result = pcall(function()
+        local info = copy_description(loader())
+        assert(type(info) == "table", "Object module must return a table")
+        validate_reload(info, base)
+        local tmp = {
+            PAR_FLOAT=wrapper.PAR_FLOAT,
+            get_modes_manager=function() return replacement end,
+        }
+        ptusa_internals.reloading = true
+        build_object_modes(info, tmp)
+        return true
+    end)
+    ptusa_internals.reloading = false
+    debug.sethook(old_hook, old_mask, old_count)
+    if not ok then error(result, 0) end
+    return result
 end
--- ----------------------------------------------------------------------------
+
+-- Old entry points cannot safely coordinate the C++ operation manager.
+function reload_tech_object()
+    error("Use SYSTEM.CMD=1030000+N to reload an object")
+end
+reload_tech_object_inner = reload_tech_object
 -- ----------------------------------------------------------------------------
 --Функция, выполняемая каждый цикл в PAC. Вызывается из управляющей программы
 --(из С++).
