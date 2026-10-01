@@ -1,4 +1,4 @@
---version = 10
+--version = 9
 
 -- ----------------------------------------------------------------------------
 --Добавление функциональности технологическому объекту на основе
@@ -865,8 +865,8 @@ function prepare_tech_object_reload(serial_number, replacement, path)
     assert(file, open_error)
     local source = file:read(1024 * 1024 + 1)
     file:close()
-    assert(source and #source <= 1024 * 1024, "Object module exceeds 1 MiB")
-    assert(source:byte(1) ~= 27, "Object module must be Lua source, not bytecode")
+    assert(source and #source <= 1024 * 1024, "main.objects.lua exceeds 1 MiB")
+    assert(source:byte(1) ~= 27, "main.objects.lua must be Lua source, not bytecode")
     local loader, load_error = loadstring(source, "@"..path)
     assert(loader, load_error)
     -- Description modules cannot call controller APIs or modify live globals.
@@ -877,13 +877,20 @@ function prepare_tech_object_reload(serial_number, replacement, path)
         end
         return result
     end
-    setfenv(loader, {operation=constants(operation), step=constants(step),
-        valve=constants(valve)})
+    local environment = {operation=constants(operation), step=constants(step),
+        valve=constants(valve)}
+    setfenv(loader, environment)
     local old_hook, old_mask, old_count = debug.gethook()
     debug.sethook(function() error("Reload instruction limit exceeded") end, "", 1000000)
     local ok, result = pcall(function()
-        local info = copy_description(loader())
-        assert(type(info) == "table", "Object module must return a table")
+        loader()
+        assert(type(environment.init_tech_objects_modes) == "function",
+            "main.objects.lua must define init_tech_objects_modes")
+        local descriptions = environment.init_tech_objects_modes()
+        assert(type(descriptions) == "table",
+            "init_tech_objects_modes must return a table")
+        local info = copy_description(descriptions[serial_number])
+        assert(type(info) == "table", "Object description not found in main.objects.lua")
         validate_reload(info, base)
         local tmp = {
             PAR_FLOAT=wrapper.PAR_FLOAT,
