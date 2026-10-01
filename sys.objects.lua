@@ -753,7 +753,7 @@ end
 local valid_states = { [0]=true, [1]=true, [2]=true, [3]=true,
     [10]=true, [11]=true, [12]=true, [13]=true, [14]=true }
 local step_fields = {
-    name=true, time_param_n=true, step_max_duration_par_n=true,
+    name=true, baseStep=true, time_param_n=true, step_max_duration_par_n=true,
     next_step_n=true, attached_object=true, steps=true,
     checked_devices=true, opened_devices=true, opened_reverse_devices=true,
     closed_devices=true, opened_upper_seat_v=true, opened_lower_seat_v=true,
@@ -829,10 +829,24 @@ local function validate_reload(info, base)
         "Changed operation count; cold restart required")
     local params_count = type(base.par_float) == "table" and #base.par_float or 1
     if info.cooper_param_number ~= nil then
-        integer(info.cooper_param_number, 1, params_count, "cooper_param_number")
+        -- Non-positive values disable step cooperation, as on cold start.
+        integer(info.cooper_param_number, -1, params_count, "cooper_param_number")
     end
     for i, mode in ipairs(modes) do
         unchanged_except(mode, base.modes[i], {states=true}, "operation "..i)
+        -- Project modules retain base-step indices established at cold start.
+        local function check_base_steps(states, other_states)
+            for state_n, state in pairs(states or {}) do
+                local other = (other_states or {})[state_n] or {}
+                for step_n, item in pairs(state.steps or {}) do
+                    local other_item = (other.steps or {})[step_n] or {}
+                    assert(equal_description(item.baseStep, other_item.baseStep),
+                        "Changed baseStep binding; cold restart required")
+                end
+            end
+        end
+        check_base_steps(mode.states, base.modes[i].states)
+        check_base_steps(base.modes[i].states, mode.states)
         for state_n, state in pairs(mode.states or {}) do
             assert(valid_states[state_n], "Invalid operation state")
             local count = array_size(state.steps or {}, "steps")
